@@ -1,0 +1,135 @@
+// Database for the Bulk Uploader app. Every table except Session is scoped to one shop.
+// Learn more about the Prisma schema: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Shopify sessions, managed by @shopify/shopify-app-session-storage-prisma. Do not rename fields.
+model Session {
+  id                  String    @id
+  shop                String
+  state               String
+  isOnline            Boolean   @default(false)
+  scope               String?
+  expires             DateTime?
+  accessToken         String
+  userId              BigInt?
+  firstName           String?
+  lastName            String?
+  email               String?
+  accountOwner        Boolean   @default(false)
+  locale              String?
+  collaborator        Boolean?  @default(false)
+  emailVerified       Boolean?  @default(false)
+  refreshToken        String?
+  refreshTokenExpires DateTime?
+
+  @@index([shop])
+}
+
+// One row per store that has installed the app.
+model Shop {
+  shop          String    @id // "my-store.myshopify.com"
+  name          String    @default("")
+  plan          String    @default("free") // billing plan, used from Phase 4
+  // Saved form settings: sheet, column mapping, images, match rules, options. See app/.server/settings.ts
+  settings      Json?
+  installedAt   DateTime  @default(now())
+  uninstalledAt DateTime?
+  updatedAt     DateTime  @updatedAt
+
+  jobs     Job[]
+  files    StoredFile[]
+  states   ProductState[]
+  uploads  UploadedImage[]
+  backups  ProductBackup[]
+}
+
+// A check / plan / apply run, carried out by the background worker. One active job per shop.
+model Job {
+  id          String    @id @default(cuid())
+  shop        String
+  command     String // check | plan | apply
+  status      String    @default("queued") // queued | running | done | failed | stopped
+  options     Json? // { only, limit, force }
+  progress    Json? // { done, total, elapsedMs, etaMs }
+  counts      Json? // { "Updated": 3, ... }
+  reportKey   String? // report rows (JSON) in file storage; can be large
+  unmatched   Json? // image files that match no product
+  log         String    @default("") // the most recent part of the run log
+  error       String?
+  stopAsked   Boolean   @default(false)
+  attempts    Int       @default(0) // times a worker started it; restarts re-queue it, up to a limit
+  createdAt   DateTime  @default(now())
+  startedAt   DateTime?
+  heartbeatAt DateTime? // the worker updates this while the job runs; stale = the worker died
+  finishedAt  DateTime?
+
+  shopRef Shop @relation(fields: [shop], references: [shop], onDelete: Cascade)
+
+  @@index([shop, createdAt])
+  @@index([shop, status])
+  @@index([status, heartbeatAt])
+}
+
+// An uploaded product sheet or image. The bytes live in file storage under storageKey.
+model StoredFile {
+  id         String   @id @default(cuid())
+  shop       String
+  kind       String // sheet | image
+  name       String // original file name, including sub-folders for images: "Sofas/Oslo_1.jpg"
+  size       Int
+  mime       String
+  storageKey String
+  createdAt  DateTime @default(now())
+
+  shopRef Shop @relation(fields: [shop], references: [shop], onDelete: Cascade)
+
+  @@index([shop, kind])
+}
+
+// Fingerprint of a product's sheet rows at its last successful upload, so re-runs skip unchanged products.
+model ProductState {
+  shop        String
+  productKey  String // lowercase product key from the sheet
+  fingerprint String
+  updatedAt   DateTime @updatedAt
+
+  shopRef Shop @relation(fields: [shop], references: [shop], onDelete: Cascade)
+
+  @@id([shop, productKey])
+}
+
+// Images the app has already added to a product, so they are never uploaded twice.
+model UploadedImage {
+  shop      String
+  productId String // gid://shopify/Product/123
+  imageUid  String
+  createdAt DateTime @default(now())
+
+  shopRef Shop @relation(fields: [shop], references: [shop], onDelete: Cascade)
+
+  @@id([shop, productId, imageUid])
+}
+
+// A product as it was in Shopify just before the app changed it.
+model ProductBackup {
+  id        String   @id @default(cuid())
+  shop      String
+  jobId     String?
+  productId String
+  handle    String
+  data      Json
+  createdAt DateTime @default(now())
+
+  shopRef Shop @relation(fields: [shop], references: [shop], onDelete: Cascade)
+
+  @@index([shop, productId])
+  @@index([shop, createdAt])
+}
