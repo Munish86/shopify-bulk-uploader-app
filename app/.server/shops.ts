@@ -2,6 +2,7 @@
 import type { Prisma } from "@prisma/client";
 import prisma from "../db.server";
 import type { Settings } from "./core/config";
+import { planKeyFromName } from "../lib/plans";
 import { getStorage, shopPrefix } from "./storage";
 
 // Called after every successful OAuth (install and re-install)
@@ -13,9 +14,42 @@ export async function recordInstall(shop: string) {
   });
 }
 
+export interface Subscription {
+  name: string;
+  status: string;
+  test?: boolean;
+}
+
+// The plan follows the store's active Shopify subscription (Managed Pricing); none = Free
+export async function setPlanFromSubscriptions(shop: string, subs: Subscription[]) {
+  const active = subs.find((s) => s.status === "ACTIVE");
+  const plan = planKeyFromName(active?.name);
+  await prisma.shop.updateMany({ where: { shop }, data: { plan, planCheckedAt: new Date() } });
+  return plan;
+}
+
+// The app's handle in Shopify Admin URLs (admin.shopify.com/store/<store>/charges/<handle>/pricing_plans). Shopify
+// picks it when the app is created and it can differ from the name, so the one Shopify reports wins over APP_HANDLE.
+let knownHandle: string | null = null;
+export function rememberAppHandle(handle: unknown) {
+  if (typeof handle === "string" && /^[a-z0-9-]{1,100}$/.test(handle)) knownHandle = handle;
+}
+// eslint-disable-next-line no-undef
+export const appHandle = () => knownHandle || process.env.APP_HANDLE || "bulk-product-uploader";
+
+// The subscription as Shopify reports it now. `graphql` is the admin client of the request.
+export async function syncPlan(shop: string, graphql: (q: string) => Promise<Response>) {
+  const res = await graphql(`#graphql
+    query activeSubscriptions { currentAppInstallation { app { handle } activeSubscriptions { name status test } } }`);
+  const { data } = await res.json();
+  rememberAppHandle(data?.currentAppInstallation?.app?.handle);
+  return setPlanFromSubscriptions(shop, data?.currentAppInstallation?.activeSubscriptions ?? []);
+}
+
 export async function recordUninstall(shop: string) {
   await prisma.session.deleteMany({ where: { shop } });
-  await prisma.shop.updateMany({ where: { shop }, data: { uninstalledAt: new Date() } });
+  // Shopify cancels the subscription on uninstall; a re-install starts on Free until a plan is chosen
+  await prisma.shop.updateMany({ where: { shop }, data: { uninstalledAt: new Date(), plan: "free" } });
   // Stop anything still waiting to run; the store no longer accepts our requests
   await prisma.job.updateMany({
     where: { shop, status: { in: ["queued", "running"] } },

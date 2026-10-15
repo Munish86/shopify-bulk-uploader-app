@@ -37,7 +37,8 @@ model Session {
 model Shop {
   shop          String    @id // "my-store.myshopify.com"
   name          String    @default("")
-  plan          String    @default("free") // billing plan, used from Phase 4
+  plan          String    @default("free") // free | pro | unlimited (app/lib/plans.ts), from the Shopify subscription
+  planCheckedAt DateTime? // last time the subscription was read from Shopify
   // Saved form settings: sheet, column mapping, images, match rules, options. See app/.server/settings.ts
   settings      Json?
   installedAt   DateTime  @default(now())
@@ -49,6 +50,18 @@ model Shop {
   states   ProductState[]
   uploads  UploadedImage[]
   backups  ProductBackup[]
+  usage    Usage[]
+}
+
+// Products created or updated per shop per calendar month (UTC), for the plan limit.
+model Usage {
+  shop     String
+  month    String // "2026-10"
+  products Int    @default(0)
+
+  shopRef Shop @relation(fields: [shop], references: [shop], onDelete: Cascade)
+
+  @@id([shop, month])
 }
 
 // A check / plan / apply run, carried out by the background worker. One active job per shop.
@@ -118,7 +131,9 @@ model UploadedImage {
   @@id([shop, productId, imageUid])
 }
 
-// A product as it was in Shopify just before the app changed it.
+// A product as it was in Shopify just before the app changed it. `data` is the product plus `_backup`
+// (what the run changed, see app/.server/core/backup.ts). All rows of one run share its jobId; a restore's
+// own backup (to undo it) uses the restore job's id. Hidden after 2 months, deleted after 6.
 model ProductBackup {
   id        String   @id @default(cuid())
   shop      String
@@ -132,4 +147,5 @@ model ProductBackup {
 
   @@index([shop, productId])
   @@index([shop, createdAt])
+  @@index([shop, jobId])
 }

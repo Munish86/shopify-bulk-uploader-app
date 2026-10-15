@@ -78,8 +78,20 @@ export async function startMock() {
         ],
       },
       collections: { nodes: [] },
+      metafields: [{ namespace: "custom", key: "material", type: "single_line_text_field", value: "Pine" }],
     },
   ];
+  for (const p of products) {
+    Object.assign(p, { seo: { title: null, description: null }, updatedAt: "2020-01-01T00:00:00Z", metafields: p.metafields || [] });
+  }
+  const touch = (p: any) => (p.updatedAt = new Date().toISOString());
+  const byId = (id: string) => products.find((x) => x.id === id);
+  const SCALARS = ["title", "descriptionHtml", "vendor", "productType", "status", "tags"];
+  const addMedia = (p: any, list?: any[]) => {
+    for (const m of list || []) {
+      p.media.nodes.push({ id: gid("MediaImage"), alt: m.alt || "", mediaContentType: "IMAGE", image: { url: m.originalSource } });
+    }
+  };
   const collections: any[] = [
     { id: "gid://shopify/Collection/1", title: "Sofas", handle: "sofas", ruleSet: null },
     { id: "gid://shopify/Collection/2", title: "Beds", handle: "beds", ruleSet: null },
@@ -104,6 +116,12 @@ export async function startMock() {
         currentAppInstallation: { accessScopes: ["write_products", "write_files"].map((handle) => ({ handle })) },
       });
     }
+    // Before the list queries below: a product query also asks for collections(first: 250)
+    if (/product\(id: \$id\) \{ metafields/.test(query)) {
+      const p = byId(v.id);
+      return ok({ product: p ? { metafields: { nodes: p.metafields } } : null });
+    }
+    if (/product\(id: \$id\)/.test(query)) return ok({ product: byId(v.id) || null });
     if (/productVariants\(/.test(query)) {
       const sku = term(v.q).toLowerCase();
       const nodes: any[] = [];
@@ -125,7 +143,44 @@ export async function startMock() {
       collections.push(c);
       return ok({ collectionCreate: { collection: c, userErrors: [] } });
     }
-    if (/collectionAddProducts/.test(query)) return ok({ collectionAddProducts: { userErrors: [] } });
+    if (/collectionAddProducts/.test(query)) {
+      const c = collections.find((x) => x.id === v.id);
+      for (const pid of v.p) {
+        const p = byId(pid);
+        if (p && c && !p.collections.nodes.some((x: any) => x.id === c.id)) {
+          p.collections.nodes.push({ id: c.id, title: c.title, ruleSet: c.ruleSet });
+        }
+      }
+      return ok({ collectionAddProducts: { userErrors: [] } });
+    }
+    if (/collectionRemoveProducts/.test(query)) {
+      for (const pid of v.p) {
+        const p = byId(pid);
+        if (p) p.collections.nodes = p.collections.nodes.filter((x: any) => x.id !== v.id);
+      }
+      return ok({ collectionRemoveProducts: { userErrors: [] } });
+    }
+    if (/productVariantsBulkUpdate/.test(query)) {
+      const p = byId(v.productId);
+      for (const u of v.variants) {
+        const vr = p.variants.nodes.find((x: any) => x.id === u.id);
+        for (const k of ["price", "compareAtPrice", "barcode"]) if (k in u) vr[k] = u[k];
+        if (u.inventoryItem) vr.sku = u.inventoryItem.sku;
+      }
+      touch(p);
+      return ok({ productVariantsBulkUpdate: { userErrors: [] } });
+    }
+    if (/metafieldsDelete/.test(query)) {
+      for (const m of v.m) {
+        const p = byId(m.ownerId);
+        p.metafields = p.metafields.filter((x: any) => !(x.namespace === m.namespace && x.key === m.key));
+      }
+      return ok({ metafieldsDelete: { userErrors: [] } });
+    }
+    if (/fileDelete/.test(query)) {
+      for (const p of products) p.media.nodes = p.media.nodes.filter((m: any) => !v.ids.includes(m.id));
+      return ok({ fileDelete: { deletedFileIds: v.ids, userErrors: [] } });
+    }
     if (/stagedUploadsCreate/.test(query)) {
       const i = v.input[0];
       const port = (server.address() as AddressInfo).port;
@@ -165,16 +220,49 @@ export async function startMock() {
           media: { nodes: [] },
           collections: { nodes: [] },
           options: [],
+          seo: { title: null, description: null },
+          metafields: [],
         };
         products.push(p);
       }
-      if (input.title) p.title = input.title;
-      if (input.tags) p.tags = input.tags;
-      if (input.descriptionHtml) p.descriptionHtml = input.descriptionHtml;
+      for (const k of SCALARS) if (input[k] !== undefined) p[k] = input[k];
+      if (input.seo) p.seo = { ...p.seo, ...input.seo };
+      if (input.variants) {
+        // productSet keeps only the variants it is given
+        p.variants.nodes = input.variants.map((iv: any) => {
+          const old = p.variants.nodes.find((x: any) => x.id && x.id === iv.id) || {
+            id: gid("ProductVariant"),
+            sku: null,
+            price: "0.00",
+            compareAtPrice: null,
+            barcode: null,
+          };
+          const { optionValues, ...f } = iv;
+          return { ...old, ...f, id: old.id, selectedOptions: optionValues.map((o: any) => ({ name: o.optionName, value: o.name })) };
+        });
+      }
+      if (input.files) {
+        p.media.nodes = [];
+        addMedia(p, input.files);
+      }
+      touch(p);
       return ok({ productSet: { product: { id: p.id, handle: p.handle, title: p.title }, userErrors: [] } });
     }
-    if (/productUpdate/.test(query)) return ok({ productUpdate: { product: { id: v.product.id }, userErrors: [] } });
+    if (/productUpdate/.test(query)) {
+      const p = byId(v.product.id);
+      for (const k of SCALARS) if (v.product[k] !== undefined) p[k] = v.product[k];
+      if (v.product.seo) p.seo = { ...v.product.seo };
+      addMedia(p, v.media);
+      touch(p);
+      return ok({ productUpdate: { product: { id: v.product.id }, userErrors: [] } });
+    }
     if (/metafieldsSet/.test(query)) {
+      for (const m of v.m) {
+        const p = byId(m.ownerId);
+        const cur = p.metafields.find((x: any) => x.namespace === m.namespace && x.key === m.key);
+        if (cur) Object.assign(cur, { type: m.type, value: m.value });
+        else p.metafields.push({ namespace: m.namespace, key: m.key, type: m.type, value: m.value });
+      }
       return ok({
         metafieldsSet: { metafields: v.m.map((m: any) => ({ key: m.key, namespace: m.namespace })), userErrors: [] },
       });

@@ -1,10 +1,16 @@
 import { useState } from "react";
 import { formatDuration, type ReadyItem } from "../../lib/uploader";
 import { Button, Checkbox, NumberField, TextField } from "../polaris";
-import { isActive, type JobInfo } from "./api";
+import { isActive, type Allowance, type JobInfo } from "./api";
 import styles from "./uploader.module.css";
 
-export const LABEL: Record<string, string> = { check: "Image check", plan: "Preview", apply: "Upload" };
+export const LABEL: Record<string, string> = {
+  check: "Image check",
+  plan: "Preview",
+  apply: "Upload",
+  "restore-plan": "Restore preview",
+  restore: "Restore",
+};
 
 export interface RunRequest {
   command: "check" | "plan" | "apply";
@@ -20,6 +26,7 @@ export function RunSection({
   startError,
   starting,
   lastPreviewChanges,
+  allowance,
   onRun,
   onStop,
 }: {
@@ -29,6 +36,7 @@ export function RunSection({
   startError: string;
   starting: boolean;
   lastPreviewChanges: number | null; // products the latest preview would change; null = no preview yet
+  allowance?: Allowance;
   onRun: (r: RunRequest) => void;
   onStop: () => void;
 }) {
@@ -84,6 +92,14 @@ export function RunSection({
           )}
         </s-stack>
         <s-text color="subdued">Steps 1 and 2 never save anything to Shopify. Run step 3 only when the preview looks right.</s-text>
+        {allowance && (
+          <s-text {...(allowance.remaining === 0 ? { tone: "critical" as const } : {})}>
+            {allowance.limit == null
+              ? `${allowance.plan} plan: no monthly limit (${allowance.used} products this month).`
+              : `${allowance.plan} plan: ${allowance.remaining} of ${allowance.limit} products left this month.`}{" "}
+            <s-link href="/app/plans">See plans</s-link>
+          </s-text>
+        )}
 
         {confirming && (
           <s-banner tone="warning" heading="Upload to Shopify?">

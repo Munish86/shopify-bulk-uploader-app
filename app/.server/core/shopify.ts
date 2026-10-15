@@ -4,7 +4,7 @@ import type { MetafieldInput, ProductSetInput } from "./build";
 import { norm, sleep } from "./util";
 
 const PRODUCT_FIELDS = `
-  id handle title status tags vendor productType descriptionHtml
+  id handle title status tags vendor productType descriptionHtml updatedAt
   seo { title description }
   options { name optionValues { name } }
   variants(first: 250) { nodes { id sku price compareAtPrice barcode selectedOptions { name value } } }
@@ -21,6 +21,7 @@ export interface ShopifyProduct {
   vendor: string;
   productType: string;
   descriptionHtml: string;
+  updatedAt?: string;
   seo: { title: string | null; description: string | null } | null;
   options: { name: string; optionValues: { name: string }[] }[];
   variants: {
@@ -33,6 +34,19 @@ export interface ShopifyProduct {
   }[];
   media: { id: string; alt: string | null; mediaContentType: string; image?: { url: string } | null }[];
   collections: { id: string; title: string; ruleSet: unknown }[];
+}
+
+export interface MetafieldValue {
+  namespace: string;
+  key: string;
+  type: string;
+  value: string;
+}
+
+export interface CreateMedia {
+  originalSource: string;
+  alt: string;
+  mediaContentType: "IMAGE";
 }
 
 export interface Collection {
@@ -327,6 +341,64 @@ export class Shopify {
     );
     const errs = d.productUpdate.userErrors;
     if (errs.length) throw new Error(`Images not added: ${errs.map((e: any) => e.message).join("; ")}`);
+  }
+
+  // ---- Used by backups and restore ----
+
+  async getMetafields(productId: string): Promise<MetafieldValue[]> {
+    const d = await this.gql(
+      `query($id: ID!) { product(id: $id) { metafields(first: 250) { nodes { namespace key type value } } } }`,
+      { id: productId },
+    );
+    return d.product?.metafields.nodes || [];
+  }
+
+  async productUpdate(product: Record<string, unknown> & { id: string }, media?: CreateMedia[]): Promise<void> {
+    const d = await this.gql(
+      `mutation($product: ProductUpdateInput!, $media: [CreateMediaInput!]) {
+         productUpdate(product: $product, media: $media) { product { id } userErrors { field message } } }`,
+      { product, media: media?.length ? media : null },
+    );
+    const errs = d.productUpdate.userErrors;
+    if (errs.length) throw new Error(`Product not saved: ${errs.map((e: any) => `${(e.field || []).join(".")} ${e.message}`).join("; ")}`);
+  }
+
+  async variantsBulkUpdate(productId: string, variants: Record<string, unknown>[]): Promise<void> {
+    const d = await this.gql(
+      `mutation($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+         productVariantsBulkUpdate(productId: $productId, variants: $variants) { userErrors { field message } } }`,
+      { productId, variants },
+    );
+    const errs = d.productVariantsBulkUpdate.userErrors;
+    if (errs.length) throw new Error(`Variants not saved: ${errs.map((e: any) => e.message).join("; ")}`);
+  }
+
+  async metafieldsDelete(ownerId: string, list: { namespace: string; key: string }[]): Promise<void> {
+    const d = await this.gql(
+      `mutation($m: [MetafieldIdentifierInput!]!) { metafieldsDelete(metafields: $m) { userErrors { field message } } }`,
+      { m: list.map(({ namespace, key }) => ({ ownerId, namespace, key })) },
+    );
+    const errs = d.metafieldsDelete.userErrors;
+    if (errs.length) throw new Error(`Metafield not removed: ${errs.map((e: any) => e.message).join("; ")}`);
+  }
+
+  async removeFromCollection(collectionId: string, productId: string): Promise<void> {
+    const d = await this.gql(
+      `mutation($id: ID!, $p: [ID!]!) { collectionRemoveProducts(id: $id, productIds: $p) { userErrors { field message } } }`,
+      { id: collectionId, p: [productId] },
+    );
+    const errs = d.collectionRemoveProducts.userErrors;
+    if (errs.length) throw new Error(errs.map((e: any) => e.message).join("; "));
+  }
+
+  // Deletes files (product images are files too). Used only for images an upload added.
+  async deleteFiles(ids: string[]): Promise<void> {
+    const d = await this.gql(
+      `mutation($ids: [ID!]!) { fileDelete(fileIds: $ids) { deletedFileIds userErrors { field message } } }`,
+      { ids },
+    );
+    const errs = d.fileDelete.userErrors;
+    if (errs.length) throw new Error(`Images not removed: ${errs.map((e: any) => e.message).join("; ")}`);
   }
 
   async metafieldsSet(ownerId: string, metafields: MetafieldInput[]): Promise<void> {

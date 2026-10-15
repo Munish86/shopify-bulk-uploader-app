@@ -1,7 +1,8 @@
 // The real database, storage, Shopify and Google wiring for processJob
 import { getGoogle, shopifyFor } from "../clients";
 import { sheetSource } from "../files";
-import { prismaRunStore, uploadedImages } from "../run-store";
+import { loadBackup } from "../backups";
+import { forgetUpload, prismaRunStore, saveProductBackup, uploadedImages } from "../run-store";
 import { getSettings } from "../shops";
 import { getStorage } from "../storage";
 import type { ProcessDeps } from "./process";
@@ -18,6 +19,11 @@ export function productionDeps(opts: { queue?: JobQueue; shuttingDown?: () => bo
     uploadedImages,
     shopifyFor,
     runStore: prismaRunStore,
+    backups: {
+      load: loadBackup,
+      saveUndo: saveProductBackup,
+      afterRestore: forgetUpload,
+    },
     shuttingDown: opts.shuttingDown,
   };
 }

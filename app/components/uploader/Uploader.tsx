@@ -10,7 +10,7 @@ import {
   type Settings,
 } from "../../lib/uploader";
 import { Button } from "../polaris";
-import { api, ApiError, isActive, type JobInfo, type Report, type SheetInfo } from "./api";
+import { api, ApiError, isActive, type Allowance, type JobInfo, type Report, type SheetInfo } from "./api";
 import { ColumnsSection } from "./ColumnsSection";
 import { ImagesSection } from "./ImagesSection";
 import { Results } from "./Results";
@@ -41,6 +41,7 @@ export interface UploaderProps {
   googleEmail: string;
   latestJob: JobInfo | null;
   templateUrl: string;
+  allowance?: Allowance;
 }
 
 export function Uploader(props: UploaderProps) {
@@ -267,6 +268,7 @@ export function Uploader(props: UploaderProps) {
         startError={startError}
         starting={starting}
         lastPreviewChanges={lastPreviewChanges}
+        allowance={props.allowance}
         onRun={(r) => void run(r)}
         onStop={() => void stop()}
       />

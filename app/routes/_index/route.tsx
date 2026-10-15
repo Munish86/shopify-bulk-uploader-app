@@ -1,10 +1,11 @@
 import type { LoaderFunctionArgs } from "react-router";
-import { redirect, Form, useLoaderData } from "react-router";
-
-import { login } from "../../shopify.server";
+import { redirect } from "react-router";
 
 import styles from "./styles.module.css";
 
+// Public landing page. App Store requirement 2.3.1: an app must not ask merchants to type their
+// myshopify.com domain, so there is no login form here; installs start from the App Store (or the
+// CLI install link during development) and come back here with ?shop=.
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const url = new URL(request.url);
 
@@ -12,12 +13,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     throw redirect(`/app?${url.searchParams.toString()}`);
   }
 
-  return { showForm: Boolean(login) };
+  return null;
 };
 
 export default function App() {
-  const { showForm } = useLoaderData<typeof loader>();
-
   return (
     <div className={styles.index}>
       <div className={styles.content}>
@@ -25,18 +24,7 @@ export default function App() {
         <p className={styles.text}>
           Update or create hundreds of Shopify products at once from a spreadsheet and a folder of images.
         </p>
-        {showForm && (
-          <Form className={styles.form} method="post" action="/auth/login">
-            <label className={styles.label}>
-              <span>Shop domain</span>
-              <input className={styles.input} type="text" name="shop" />
-              <span>e.g: my-shop-domain.myshopify.com</span>
-            </label>
-            <button className={styles.button} type="submit">
-              Log in
-            </button>
-          </Form>
-        )}
+        <p className={styles.text}>Install it from the Shopify App Store, then open it from your Shopify admin.</p>
         <ul className={styles.list}>
           <li>
             <strong>Any sheet</strong>. Excel, CSV or Google Sheets, with your
@@ -51,6 +39,9 @@ export default function App() {
             saved, with backups of each product.
           </li>
         </ul>
+        <p className={styles.text}>
+          <a href="/privacy">Privacy policy</a> · <a href="/support">Support</a>
+        </p>
       </div>
     </div>
   );

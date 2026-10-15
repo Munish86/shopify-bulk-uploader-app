@@ -13,6 +13,10 @@ const TONE: Record<string, "success" | "info" | "warning" | "critical"> = {
   "Will create": "info",
   "No images found": "warning",
   "Not found in Shopify": "warning",
+  "Plan limit reached": "warning",
+  Restored: "success",
+  "Will restore": "info",
+  Skipped: "warning",
   Error: "critical",
 };
 
@@ -27,7 +31,9 @@ export function Results({ job, report }: { job: JobInfo; report: Report }) {
   const [filter, setFilter] = useState("");
   const [q, setQ] = useState("");
   const [page, setPage] = useState(0);
-  const shopCols = job.command !== "check";
+  const restore = job.command.startsWith("restore");
+  const shopCols = job.command !== "check" && !restore;
+  const sheetCols = !restore; // sheet rows and matched images belong to uploads only
 
   const rows = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -78,11 +84,12 @@ export function Results({ job, report }: { job: JobInfo; report: Report }) {
           <table className={styles.table}>
             <thead>
               <tr>
-                <th>Row</th>
+                {sheetCols && <th>Row</th>}
                 <th>Product key</th>
                 <th>Title</th>
                 <th>Result</th>
-                <th>Images</th>
+                {sheetCols && <th>Images</th>}
+                {restore && <th>What is put back</th>}
                 {shopCols && (
                   <>
                     <th>New images</th>
@@ -93,7 +100,7 @@ export function Results({ job, report }: { job: JobInfo; report: Report }) {
                   </>
                 )}
                 <th>Notes</th>
-                {shopCols && <th>Shopify</th>}
+                {(shopCols || restore) && <th>Shopify</th>}
               </tr>
             </thead>
             <tbody>
@@ -101,24 +108,27 @@ export function Results({ job, report }: { job: JobInfo; report: Report }) {
                 const link = adminLink(x.shopify_link);
                 return (
                   <tr key={x.product_key}>
-                    <td>{x.sheet_rows}</td>
+                    {sheetCols && <td>{x.sheet_rows}</td>}
                     <td>{x.product_key}</td>
                     <td className={styles.wrap}>{x.title}</td>
                     <td>
                       <s-badge tone={TONE[x.action || ""] || "neutral"}>{x.action}</s-badge>
                       {x.found_by && <div className={styles.muted}>{x.found_by}</div>}
                     </td>
-                    <td>
-                      <div className={styles.thumbs}>
-                        {(report.images[x.product_key] || []).map((im) =>
-                          im.url ? (
-                            <img key={im.where} loading="lazy" src={im.url} title={im.name} alt={im.name} />
-                          ) : (
-                            <span key={im.where}>{im.name}</span>
-                          ),
-                        )}
-                      </div>
-                    </td>
+                    {sheetCols && (
+                      <td>
+                        <div className={styles.thumbs}>
+                          {(report.images[x.product_key] || []).map((im) =>
+                            im.url ? (
+                              <img key={im.where} loading="lazy" src={im.url} title={im.name} alt={im.name} />
+                            ) : (
+                              <span key={im.where}>{im.name}</span>
+                            ),
+                          )}
+                        </div>
+                      </td>
+                    )}
+                    {restore && <td className={styles.wrap}>{x.changes}</td>}
                     {shopCols && (
                       <>
                         <td>{x.images_new ?? ""}</td>
@@ -134,7 +144,7 @@ export function Results({ job, report }: { job: JobInfo; report: Report }) {
                       {x.error && <span className={styles.err}>{x.error} </span>}
                       {x.warnings}
                     </td>
-                    {shopCols && <td>{link && <s-link href={link}>Open</s-link>}</td>}
+                    {(shopCols || restore) && <td>{link && <s-link href={link}>Open</s-link>}</td>}
                   </tr>
                 );
               })}

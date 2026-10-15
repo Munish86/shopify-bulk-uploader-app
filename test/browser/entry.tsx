@@ -2,6 +2,7 @@
 import { createRoot } from "react-dom/client";
 import { createElement } from "react";
 import { Uploader } from "../../app/components/uploader/Uploader";
+import { Backups, type BackupList } from "../../app/components/uploader/Backups";
 
 const HEADERS = [
   "Product Key", "SKU", "Image Name", "Product Title", "Vendor", "Tags", "Colour", "Size", "Price",
@@ -64,7 +65,11 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     return json({ file: { id: "x" } });
   }
   if (url === "/app/api/jobs" && method === "GET") return json({ jobs: [] });
-  if (url === "/app/api/jobs" && method === "POST") return json({ job: { id: "j2", status: "queued", command: "plan" } }, 201);
+  if (url === "/app/api/jobs" && method === "POST") {
+    const cmd = (body as { command: string }).command;
+    const id = cmd === "restore-plan" ? "r1" : cmd === "restore" ? "r2" : "j2";
+    return json({ job: { id, status: "queued", command: cmd } }, 201);
+  }
   if (url === "/app/api/jobs/j2?report=json") {
     return json({
       report: [
@@ -86,15 +91,75 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     polls++;
     return json({ job: polls < 2 ? job("running", 1) : job("done", 3) });
   }
+  // ---- Backups page ----
+  if (url === "/app/api/backups") return json(backupList(restored));
+  if (url.startsWith("/app/api/jobs/r") && url.endsWith("?report=json")) {
+    const apply = url.includes("/r2");
+    return json({
+      report: [
+        { product_key: "SOFA-001", title: "Oslo Sofa", action: apply ? "Restored" : "Will restore", changes: "description, meta title/description", shopify_link: "https://admin.shopify.com/store/x/products/111" },
+        { product_key: "BED-014", title: "Aria Bed", action: "Already same as backup", changes: "" },
+      ],
+      images: {},
+      unmatched: [],
+      csvUrl: "/dl/report-csv/r1?sig=x",
+    });
+  }
+  if (url === "/app/api/jobs/r1" || url === "/app/api/jobs/r2") {
+    const apply = url.endsWith("r2");
+    if (apply) restored = true;
+    return json({
+      job: {
+        ...job("done", 2),
+        id: apply ? "r2" : "r1",
+        command: apply ? "restore" : "restore-plan",
+        options: { backup: "b0000000001" },
+        progress: { done: 2, total: 2, elapsedMs: 1000, etaMs: 0 },
+        counts: apply ? { Restored: 1, "Already same as backup": 1 } : { "Will restore": 1, "Already same as backup": 1 },
+        log: "12:00:00  === RESTORE PREVIEW started ===",
+      },
+    });
+  }
   return json({ error: `fake API: no answer for ${method} ${url}` }, 404);
 };
 
-createRoot(document.getElementById("root")!).render(
-  createElement(Uploader, {
-    initialSettings: { sheet: { source: "file", fileId: "sheet1" }, images: { source: "upload" } },
-    imageCount: 3,
-    googleEmail: "uploader@example.iam.gserviceaccount.com",
-    templateUrl: "/templates/Shopify-Product-Template.xlsx",
-    latestJob: null,
-  }),
-);
+let restored = false;
+const day = 24 * 3600e3;
+const at = (daysAgo: number, hour: number) => new Date(new Date().setHours(hour, 15, 0, 0) - daysAgo * day).toISOString();
+const backup = (id: string, daysAgo: number, hour: number, extra = {}) => ({
+  id,
+  kind: "upload",
+  at: at(daysAgo, hour),
+  products: 158,
+  of: null,
+  hidden: daysAgo > 61,
+  expiresAt: new Date(Date.parse(at(daysAgo, hour)) + 182 * day).toISOString(),
+  ...extra,
+});
+const backupList = (withRestore: boolean) => ({
+  hideMonths: 2,
+  keepMonths: 6,
+  backups: [
+    ...(withRestore ? [backup("r2", 0, 23, { kind: "restore", of: "b0000000001", products: 1 })] : []),
+    backup("b0000000001", 0, 12),
+    backup("b0000000002", 0, 11, { products: 64 }),
+    backup("b0000000003", 1, 18, { products: 1 }),
+    backup("b0000000004", 90, 10, { products: 7 }),
+  ],
+});
+
+const root = createRoot(document.getElementById("root")!);
+if (location.search.includes("backups")) {
+  root.render(createElement(Backups, { initial: backupList(false) as BackupList, latestJob: null }));
+} else {
+  root.render(
+    createElement(Uploader, {
+      initialSettings: { sheet: { source: "file", fileId: "sheet1" }, images: { source: "upload" } },
+      imageCount: 3,
+      googleEmail: "uploader@example.iam.gserviceaccount.com",
+      templateUrl: "/templates/Shopify-Product-Template.xlsx",
+      latestJob: null,
+      allowance: { plan: "Free", limit: 50, used: 12, remaining: 38 },
+    }),
+  );
+}

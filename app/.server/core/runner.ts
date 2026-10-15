@@ -10,6 +10,7 @@ import { mappedColumns, type Config } from "./config";
 import type { Google } from "./google";
 import { buildIndex, findImages, listImages, alreadyOnProduct, type ImageFile } from "./images";
 import { loadRows, type SheetSource } from "./sheet";
+import { isRestorable, type BackupInfo } from "./backup";
 import type { Collection, Shopify, ShopifyProduct } from "./shopify";
 import { norm, pool, formatDuration, toCsv } from "./util";
 
@@ -27,8 +28,11 @@ export const ACTIONS = {
   WILL_CREATE: "Will create",
   UPDATED: "Updated",
   CREATED: "Created",
+  LIMIT: "Plan limit reached",
   ERROR: "Error",
 } as const;
+
+export const LIMIT_NOTE = "This month's product allowance of your plan is used up. Upgrade the plan, or wait until next month.";
 
 export const REPORT_HEADERS = [
   "sheet_rows", "product_key", "title", "action", "found_by", "shopify_link", "images_found", "images_new", "image_files",
@@ -48,7 +52,11 @@ export interface RunStore {
   setFingerprint(productKey: string, fingerprint: string): Promise<void>;
   getUploaded(productId: string): Promise<string[]>;
   addUploaded(productId: string, imageUids: string[]): Promise<void>;
-  saveBackup(product: ShopifyProduct): Promise<void>;
+  saveBackup(product: ShopifyProduct, info: BackupInfo): Promise<void>;
+  // Plan limit: takes one product from this month's allowance (false = used up), or gives it back
+  // when the product could not be saved. Without these, there is no limit.
+  useQuota?(): Promise<boolean>;
+  releaseQuota?(): Promise<void>;
 }
 
 export interface Progress {
@@ -230,6 +238,8 @@ export async function runJob(cmd: Command, deps: RunDeps, opts: RunOptions = {})
     return creatingCollections.get(key)!;
   };
 
+  let limitReached = false; // the plan allowance ran out during this run: the remaining products are skipped
+
   async function processOne(g: RunGroup, i: number) {
     const row = base(g);
     const tag = `[${i + 1}/${total}] ${g.key}`;
@@ -245,6 +255,8 @@ export async function runJob(cmd: Command, deps: RunDeps, opts: RunOptions = {})
       )
       .digest("hex");
     let release = () => {};
+    let quotaTaken = false; // one product of the plan allowance was taken for this product
+    let saved = false; // something was saved to Shopify for this product
     try {
       // Try each "find product" rule in order; the first one that finds a product wins
       let existing: ExistingProduct | null = null;
@@ -348,9 +360,30 @@ export async function runJob(cmd: Command, deps: RunDeps, opts: RunOptions = {})
       }
 
       // ---- APPLY ----
+      if (limitReached || (store.useQuota && !(await store.useQuota()))) {
+        if (!limitReached) log(`Plan limit reached: ${LIMIT_NOTE}`);
+        limitReached = true;
+        results[i] = { ...row, action: ACTIONS.LIMIT, warnings: LIMIT_NOTE };
+        return;
+      }
+      quotaTaken = !!store.useQuota;
+      // Backup first. If it cannot be saved, the product is not changed (the error lands in the report).
       if (existing) {
         const { foundBy: _f, ...snapshot } = existing;
-        await store.saveBackup(snapshot);
+        const prevMf = plan.metafields.length ? await shop!.getMetafields(existing.id) : [];
+        await store.saveBackup(snapshot, {
+          version: 2,
+          kind: "upload",
+          key: g.key,
+          fields: Object.keys(plan.input).filter(isRestorable),
+          metafields: plan.metafields.map((m) => {
+            const was = prevMf.find((x) => x.namespace === m.namespace && x.key === m.key);
+            return { namespace: m.namespace, key: m.key, type: was?.type || m.type, value: was ? was.value : null };
+          }),
+          collections: colAdd.map((c) => c.title),
+          imagesAdded: upload.length,
+          imagesReplaced: cfg.images.mode === "replace" && upload.length > 0 && media.length > 0,
+        });
       }
       const alt = firstVal(g.rows, cfg.columns.image_alt) || plan.input.title || existing?.title || g.key;
       const staged: { f: ImageFile; url: string }[] = [];
@@ -366,14 +399,16 @@ export async function runJob(cmd: Command, deps: RunDeps, opts: RunOptions = {})
       }
       let productId = existing?.id;
       if (!existing || Object.keys(input).some((k) => k !== "id")) {
-        const saved = await shop!.productSet(input);
-        productId = saved.id;
+        const result = await shop!.productSet(input);
+        productId = result.id;
+        saved = true;
       }
       if (staged.length && appendLater) {
         await shop!.appendMedia(
           productId!,
           staged.map(({ url }) => ({ originalSource: url, alt, mediaContentType: "IMAGE" as const })),
         );
+        saved = true;
       }
       if (staged.length) await store.addUploaded(productId!, staged.map((s) => s.f.uid));
       if (plan.metafields.length) await shop!.metafieldsSet(productId!, plan.metafields);
@@ -389,6 +424,8 @@ export async function runJob(cmd: Command, deps: RunDeps, opts: RunOptions = {})
     } catch (e) {
       results[i] = { ...row, action: ACTIONS.ERROR, error: (e as Error).message };
       log(`${tag}: ERROR - ${(e as Error).message}`);
+      // Nothing reached Shopify: the product does not count towards the plan limit
+      if (quotaTaken && !saved) await store.releaseQuota?.().catch(() => {});
     } finally {
       release();
     }

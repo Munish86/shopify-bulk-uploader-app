@@ -1,16 +1,19 @@
 # Bulk Product Uploader: App Store tak ka roadmap
 
 Owner ke liye checklist: kya ho chuka hai, aur Shopify App Store pe app dikhne tak kya-kya karna baaki hai.
-Last updated: 2026-10-09
+Last updated: 2026-10-09 (Phase 4 code done)
 
 Technical details (code, files, tests) ke liye `docs/PROGRESS.md` dekho.
+
+**2026-10-12 update:** Claude ka saara launch-prep kaam ho gaya: listing ka text, reviewer instructions, review kit
+(sample sheet + images), App Store rules ke hisaab se fixes. Ab live karne ke steps order mein `docs/LAUNCH.md` mein hain.
 
 ---
 
 ## Abhi kahan hain (ek nazar mein)
 
 ```
-[✅ Phase 1] → [✅ Phase 2] → [✅ Phase 3] → [🔄 Local test] → [⬜ Phase 4: Billing] → [⬜ Live (Railway)] → [⬜ Phase 5: Listing] → [⬜ Phase 6: Review] → 🎉 App Store
+[✅ Phase 1] → [✅ Phase 2] → [✅ Phase 3] → [✅ Phase 4: Billing + Backups (code)] → [🔄 Local test] → [⬜ Live (Railway)] → [⬜ Phase 5: Listing] → [⬜ Phase 6: Review] → 🎉 App Store
 ```
 
 ---
@@ -23,7 +26,8 @@ Technical details (code, files, tests) ke liye `docs/PROGRESS.md` dekho.
 | 1 | Shopify ka official app template, install/login (OAuth), database, purane tool ka poora upload logic naye app mein, GDPR/privacy webhooks |
 | 2 | Background mein upload chalna (browser band ho tab bhi), ek store ek run, server restart pe run apne aap dobara, file storage (Cloudflare R2), purana data apne aap saaf |
 | 3 | Shopify Admin ke andar pura upload form: sheet, columns, images, rules, run, results, thumbnails, CSV report, pichle runs |
-| Tests | 52 automatic tests + asli browser mein 23 checks, sab pass |
+| 4 | **Backups aur undo:** har upload se pehle backup, "Backups" page pe date-wise list, Preview restore / Restore (sirf wahi wapas jo upload ne badla), restore ka bhi undo, 2 mahine baad hide, 6 mahine baad delete. **Plans:** Free 50 / Pro 2,000 / Unlimited products per month, limit puri hone pe upload rukta hai, "Plans" page. **Privacy policy** (`/privacy`) aur **Support** (`/support`) pages |
+| Tests | 62 automatic tests + asli browser mein 31 checks, sab pass |
 
 ### Setup (Owner)
 - ✅ Shopify Partner account (org: ZingwithCloude)
@@ -58,13 +62,13 @@ App aapke computer se chal rahi hai (`npm run dev` + temporary tunnel).
 
 ## ⬜ Aage kya karna hai
 
-### Phase 4: Billing (paid plans), ~3-4 din
+### Phase 4 ke baad bache kaam
 | # | Kaam | Kaun |
 |---|---|---|
-| 1 | **Plans aur prices decide karna.** Jaise Free (50 products/month), Pro ($__/month, ___ products), Unlimited ($__/month) | **Owner** |
-| 2 | Free trial chahiye? Kitne din? | **Owner** |
-| 3 | Shopify Billing jodna, plans ka page, monthly limit lagana | Claude |
-| 4 | Development store pe test charge karke dekhna | Owner + Claude |
+| 1 | `npm run dev` band karke dobara chalana (naya database table ban jayega), phir dev store pe: 2-3 products upload → Backups → Preview restore → Restore, aur Plans page dekhna | **Owner** |
+| 2 | **Prices aur free trial decide karna**, phir Partner Dashboard → app → Pricing → "Managed pricing" → 3 plans banana. Naam: **Free**, **Pro**, **Unlimited** (inhi naamon se limit lagti hai). Limit badalni ho to Claude ko batana | **Owner** |
+| 3 | Dev store pe Pro plan choose karke test charge dekhna (dev store pe paisa nahi katta) | Owner + Claude |
+| 4 | `/privacy` page ka text padh ke OK karna (ye legal document hai) | **Owner** |
 
 ### Live server (Railway), ~1 din
 | # | Kaam | Kaun |
@@ -85,7 +89,7 @@ App aapke computer se chal rahi hai (`npm run dev` + temporary tunnel).
 | 1 | Live app pe poora test (bade sheet, bahut saari images) | Owner + Claude |
 | 2 | Shopify ka AI self-review tool chala ke kamiyan theek karna | Claude |
 | 3 | **App icon:** 1200×1200 px, PNG/JPG | **Owner** (designer) |
-| 4 | **Privacy policy page:** draft Claude likhega, website pe Owner lagayega | Claude + Owner |
+| 4 | **Privacy policy page:** ✅ app mein `/privacy` pe bana hua hai, Owner text check kare | Owner |
 | 5 | **Support email** (jaise support@...) | **Owner** |
 | 6 | App description, features, screenshots | Claude (draft) + Owner |
 | 7 | **Demo video (zaroori):** install se upload tak screen recording | **Owner** |
@@ -109,9 +113,9 @@ App aapke computer se chal rahi hai (`npm run dev` + temporary tunnel).
 | GDPR/privacy webhooks | ✅ |
 | App naam 30 characters tak, "Shopify" shabd nahi | ✅ "Bulk Product Uploader" |
 | SSL wala live address | ⬜ Railway pe milega |
-| Saari payment Shopify Billing se | ⬜ Phase 4 |
+| Saari payment Shopify Billing se | ✅ Code (Managed Pricing); plans Partner Dashboard mein banane baaki |
 | Store ki speed 10 points se zyada na giraana | ✅ App store ki website pe kuch nahi daalti |
-| Privacy policy | ⬜ Phase 5 |
+| Privacy policy | ✅ `/privacy` (Owner review baaki) |
 | Icon 1200×1200 | ⬜ Phase 5 |
 | Demo video | ⬜ Phase 5 |
 | Reviewer ke liye test instructions | ⬜ Phase 5 |
@@ -140,9 +144,9 @@ Ye niyam badal sakte hain. Submit karne se pehle Partner Dashboard mein ek baar 
 ---
 
 ## Owner ke pending kaam (jaldi wale upar)
-1. ⬜ **Local test karna** (upar wali list)
+1. ⬜ **`npm run dev` restart karke local test karna** (upar wali list, Backups aur Plans page bhi)
 2. ⬜ **PATH permanent theek karna:** Start → "environment variables" → System variables → Path → New: `C:\Windows\System32` aur `C:\Windows` → OK, phir VS Code restart
-3. ⬜ **Plans, prices, free trial decide karna**
+3. ⬜ **Prices, free trial decide karke Partner Dashboard mein Managed Pricing plans banana** (Free / Pro / Unlimited)
 4. ⬜ App icon banwana (1200×1200)
 5. ⬜ Support email banana
 6. ⬜ GitHub, Railway, Cloudflare accounts (live server ke waqt)

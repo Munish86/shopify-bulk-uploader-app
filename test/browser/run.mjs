@@ -104,6 +104,37 @@ check("one confirmation banner", (await page.locator('s-banner[heading="Upload t
 check("selected choices visible", await page.locator("s-button", { hasText: "Google Sheet link" }).first().isVisible() && await page.locator("s-button", { hasText: "Upload images" }).first().isVisible());
 await shot("5-confirm");
 
+check("plan allowance shown", await page.getByText("Free plan: 38 of 50 products left this month.").isVisible());
+
+// ---- Backups page ----
+await page.goto("file:///" + path.join(here, "index.html").replace(/\\/g, "/") + "?backups");
+await page.waitForFunction(() => document.querySelector("s-section table"), null, { timeout: 30000 });
+await page.waitForTimeout(1000);
+const dayRows = () => page.locator("tbody tr").evaluateAll((trs) => trs.filter((t) => t.querySelector("td[colspan]")).length);
+check("backups grouped by day (today, yesterday)", (await dayRows()) === 2, String(await dayRows()));
+check("3-month-old backup hidden", !(await page.getByText("7", { exact: true }).isVisible()));
+await page.locator("s-button", { hasText: "Show older backups (1)" }).click();
+await page.waitForTimeout(300);
+check("shown after Show older backups", (await dayRows()) === 3);
+await shot("6-backups");
+await page.locator("s-button", { hasText: "Hide older backups" }).click();
+await page.locator("s-button", { hasText: "Preview restore" }).first().click();
+await page.waitForSelector("text=Restore preview results", { timeout: 15000 });
+const prevCall = (await page.evaluate(() => window.__calls)).filter((c) => c.url === "/app/api/jobs" && c.method === "POST").at(-1);
+check("restore preview request", prevCall?.body?.command === "restore-plan" && prevCall?.body?.backup === "b0000000001", JSON.stringify(prevCall?.body));
+check("preview result row", await page.getByText("description, meta title/description").first().isVisible());
+await page.locator("s-button", { hasText: /^Restore$/ }).first().click();
+await page.waitForTimeout(300);
+check("restore asks first, quoting the preview", await page.getByText("The preview shows 1 products will be put back").isVisible());
+await shot("7-restore-confirm");
+await page.locator("s-button", { hasText: "Start the restore" }).click();
+await page.waitForSelector("text=Restore finished", { timeout: 15000 });
+await page.waitForTimeout(800);
+const restoreCall = (await page.evaluate(() => window.__calls)).filter((c) => c.url === "/app/api/jobs" && c.method === "POST").at(-1);
+check("restore request", restoreCall?.body?.command === "restore" && restoreCall?.body?.backup === "b0000000001");
+check("the restore is listed and can be undone", await page.getByText("Restoring this undoes that restore").isVisible());
+await shot("8-restored");
+
 check("no page errors", errors.length === 0, errors.slice(0, 5).join(" | "));
 await browser.close();
 console.log(failures ? `${failures} FAILED` : "ALL PASSED");

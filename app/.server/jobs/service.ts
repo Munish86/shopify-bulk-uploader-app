@@ -1,7 +1,10 @@
 // Starting, stopping and reading jobs, plus the worker's housekeeping. Database side of the job system.
 import type { Prisma } from "@prisma/client";
 import prisma from "../../db.server";
-import { COMMANDS, type Command, type ReportRow } from "../core/runner";
+import { COMMANDS, type ReportRow } from "../core/runner";
+import { planByKey, remaining } from "../../lib/plans";
+import { backupExists, deleteExpiredBackups } from "../backups";
+import { usageThisMonth } from "../run-store";
 import { FileMissingError, getStorage } from "../storage";
 import type { ClaimedJob, JobRepo, SavedReport } from "./process";
 import { getQueue, type JobQueue } from "./queue";
@@ -17,17 +20,33 @@ export class JobError extends Error {
   }
 }
 
+// Uploads (check / plan / apply) plus putting a backup back (preview, then restore)
+export const RESTORE_COMMANDS = ["restore-plan", "restore"] as const;
+export const JOB_COMMANDS = [...COMMANDS, ...RESTORE_COMMANDS] as const;
+export type JobCommand = (typeof JOB_COMMANDS)[number];
+export const isRestoreCommand = (c: string): c is (typeof RESTORE_COMMANDS)[number] =>
+  (RESTORE_COMMANDS as readonly string[]).includes(c);
+
 export interface JobOptions {
   only?: string;
   limit?: number;
   force?: boolean;
+  backup?: string; // restore: the backup (job id of the run that took it)
+  skipEdited?: boolean; // restore: leave products changed in Shopify after that run
 }
 
 // Checks what the browser sent. Never trust it to be well-formed.
-export function parseJobRequest(body: unknown): { command: Command; options: JobOptions } {
+export function parseJobRequest(body: unknown): { command: JobCommand; options: JobOptions } {
   const b = (body && typeof body === "object" ? body : {}) as Record<string, unknown>;
-  if (!COMMANDS.includes(b.command as Command)) throw new JobError('command must be "check", "plan" or "apply".');
+  if (!JOB_COMMANDS.includes(b.command as JobCommand)) {
+    throw new JobError('command must be "check", "plan", "apply", "restore-plan" or "restore".');
+  }
   const options: JobOptions = {};
+  if (isRestoreCommand(b.command as string)) {
+    if (typeof b.backup !== "string" || !/^[a-z0-9]{10,40}$/i.test(b.backup)) throw new JobError("Choose a backup to restore.");
+    options.backup = b.backup;
+    if (b.skipEdited === true) options.skipEdited = true;
+  }
   if (b.only != null && b.only !== "") {
     if (typeof b.only !== "string" || b.only.length > 5000) throw new JobError("only must be a list of product keys.");
     options.only = b.only;
@@ -37,18 +56,38 @@ export function parseJobRequest(body: unknown): { command: Command; options: Job
     if (!Number.isInteger(n) || n < 1 || n > 50_000) throw new JobError("limit must be a whole number from 1 to 50000.");
     options.limit = n;
   }
-  if (b.force === true) options.force = true;
-  return { command: b.command as Command, options };
+  if (b.force === true && !isRestoreCommand(b.command as string)) options.force = true;
+  return { command: b.command as JobCommand, options };
+}
+
+// Refuses a run that cannot do anything: an upload with this month's allowance used up, or a restore of
+// a backup that does not exist (any more).
+export async function checkCanStart(shop: string, command: JobCommand, options: JobOptions) {
+  if (isRestoreCommand(command)) {
+    if (!(await backupExists(shop, options.backup!))) throw new JobError("This backup no longer exists.", 404);
+    return;
+  }
+  if (command !== "apply") return;
+  const row = await prisma.shop.findUnique({ where: { shop }, select: { plan: true } });
+  const plan = planByKey(row?.plan);
+  if (remaining(plan, await usageThisMonth(shop)) === 0) {
+    throw new JobError(
+      `Your ${plan.name} plan allows ${plan.productsPerMonth} products per month, and they are used up. Upgrade the plan on the Plans page, or wait until next month. Check and preview still work.`,
+      402,
+    );
+  }
 }
 
 // One active job per shop. The Shop row is locked while checking, so two clicks cannot start two runs.
-export async function enqueueJob(shop: string, command: Command, options: JobOptions, queue: JobQueue = getQueue()) {
+export async function enqueueJob(shop: string, command: JobCommand, options: JobOptions, queue: JobQueue = getQueue()) {
   const job = await prisma.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT 1 FROM "Shop" WHERE "shop" = ${shop} FOR UPDATE`;
     const active = await tx.job.findFirst({ where: { shop, status: { in: ACTIVE } }, select: { id: true } });
     if (active) throw new JobError("A run is already in progress. Wait for it to finish or stop it first.", 409);
     return tx.job.create({ data: { shop, command, options: options as Prisma.InputJsonValue } });
-  });
+    // Prisma's defaults (2 s to get a connection, 5 s to finish) fail busy servers with an error instead of
+    // waiting; clicks queued behind the lock then get a clear 409.
+  }, { maxWait: 15_000, timeout: 20_000 });
   try {
     await queue.add(job.id, job.id);
   } catch (e) {
@@ -194,8 +233,8 @@ export async function sweepJobs(queue: JobQueue = getQueue()) {
 const DAY = 24 * 60 * 60 * 1000;
 export const RETENTION = {
   fileDays: Number(process.env.FILE_RETENTION_DAYS || 7),
-  backupDays: 30,
-  jobDays: 90,
+  // Kept as long as backups (6 months), so the backup list can say which run took each backup
+  jobDays: 190,
 };
 
 // Deletes old uploads, reports, backups and jobs. Files of a shop with a run in progress are kept.
@@ -223,8 +262,6 @@ export async function cleanupOldData() {
     await prisma.job.delete({ where: { id: j.id } });
   }
 
-  const backups = await prisma.productBackup.deleteMany({
-    where: { createdAt: { lt: new Date(Date.now() - RETENTION.backupDays * DAY) } },
-  });
-  return { files: files.length, jobs: jobs.length, backups: backups.count };
+  const backups = await deleteExpiredBackups();
+  return { files: files.length, jobs: jobs.length, backups };
 }

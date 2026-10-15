@@ -22,7 +22,8 @@
     "db:migrate": "prisma migrate dev",
     "build:worker": "esbuild worker.ts --bundle --platform=node --format=esm --target=node22 --packages=external --outfile=build/worker/index.js",
     "worker": "node build/worker/index.js",
-    "test:browser": "node test/browser/build.mjs && node test/browser/run.mjs"
+    "test:browser": "node test/browser/build.mjs && node test/browser/run.mjs",
+    "test:smoke": "node test/smoke/run.mjs"
   },
   "type": "module",
   "engines": {
@@ -50,6 +51,8 @@
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.10",
+    "@electric-sql/pglite-socket": "^0.2.13",
     "@shopify/api-codegen-preset": "^2.0.0",
     "@shopify/polaris-types": "1.0.1",
     "@types/eslint": "^9.6.1",

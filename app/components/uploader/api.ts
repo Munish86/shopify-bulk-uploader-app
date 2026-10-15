@@ -38,11 +38,29 @@ export interface SheetInfo {
   preview: Record<string, string>[];
 }
 
+// The plan's monthly product allowance, as of when the page loaded
+export interface Allowance {
+  plan: string;
+  limit: number | null; // null = no limit
+  used: number;
+  remaining: number | null;
+}
+
+export interface BackupSummary {
+  id: string;
+  kind: "upload" | "restore";
+  at: string;
+  products: number;
+  of: string | null;
+  hidden: boolean;
+  expiresAt: string;
+}
+
 export interface JobInfo {
   id: string;
-  command: "check" | "plan" | "apply";
+  command: "check" | "plan" | "apply" | "restore-plan" | "restore";
   status: "queued" | "running" | "done" | "failed" | "stopped";
-  options: { only?: string; limit?: number; force?: boolean } | null;
+  options: { only?: string; limit?: number; force?: boolean; backup?: string; skipEdited?: boolean } | null;
   progress: { done: number; total: number; elapsedMs: number; etaMs: number } | null;
   counts: Record<string, number> | null;
   error: string | null;

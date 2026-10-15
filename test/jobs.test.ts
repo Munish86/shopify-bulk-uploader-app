@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import type { BackupData } from "../app/.server/core/backup";
 import type { Settings } from "../app/.server/core/config";
 import { Google } from "../app/.server/core/google";
 import { describeImage } from "../app/.server/core/images";
@@ -83,6 +84,9 @@ function memoryRepo() {
   return { repo, jobs, add, requeued, heartbeats: () => heartbeats };
 }
 
+// One product as it was before an upload that changed its description
+const savedBackup: BackupData[] = [];
+
 const noStore: RunStore = {
   getFingerprint: async () => null,
   setFingerprint: async () => {},
@@ -128,6 +132,11 @@ describe("processJob", () => {
         ),
       shopifyFor: (shop) => new Shopify({ shop, apiVersion: "2026-10", endpoint: mock.endpoint, accessToken: async () => "t" }),
       runStore: () => noStore,
+      backups: {
+        load: async (_shop, id) => (id === "upload1" ? { items: savedBackup, finishedAt: new Date() } : null),
+        saveUndo: async () => {},
+        afterRestore: async () => {},
+      },
       heartbeatMs: 5,
       shuttingDown: () => shuttingDown,
     };
@@ -204,6 +213,22 @@ describe("processJob", () => {
     expect(mem.requeued).toEqual(["j8"]);
   });
 
+  it("runs a restore preview of a backup, and fails clearly for a missing one", async () => {
+    const p = await deps.shopifyFor(SHOP).getProduct("gid://shopify/Product/1");
+    savedBackup.splice(0, savedBackup.length, {
+      ...p!,
+      descriptionHtml: "<p>before</p>",
+      _backup: { version: 2, kind: "upload", key: "AMC-SOFA-001", fields: ["descriptionHtml"], metafields: [], collections: [], imagesAdded: 0, imagesReplaced: false },
+    });
+    mem.add("r1", "restore-plan", { options: { backup: "upload1" } });
+    expect(await processJob("r1", deps)).toBe("done");
+    expect(mem.jobs.get("r1")!.counts).toEqual({ "Will restore": 1 });
+    expect(mem.jobs.get("r1")!.log).toMatch(/RESTORE PREVIEW started/);
+    mem.add("r2", "restore", { options: { backup: "gone" } });
+    expect(await processJob("r2", deps)).toBe("failed");
+    expect(mem.jobs.get("r2")!.error).toMatch(/no longer exists/);
+  });
+
   it(`gives up after ${MAX_ATTEMPTS} interruptions`, async () => {
     mem.add("j9", "check", { attempts: MAX_ATTEMPTS });
     expect(await processJob("j9", deps)).toBe("failed");
@@ -236,6 +261,12 @@ describe("requests from the browser", () => {
     expect(parseJobRequest({ command: "apply", limit: "5", force: true })).toEqual({ command: "apply", options: { limit: 5, force: true } });
     expect(parseJobRequest({ command: "plan", limit: 0, only: "" })).toEqual({ command: "plan", options: {} });
     expect(() => parseJobRequest({ command: "delete" })).toThrow(/command/);
+    expect(parseJobRequest({ command: "restore", backup: "cmabc1234567890", skipEdited: true, force: true })).toEqual({
+      command: "restore",
+      options: { backup: "cmabc1234567890", skipEdited: true },
+    });
+    expect(() => parseJobRequest({ command: "restore-plan", backup: "../x" })).toThrow(/Choose a backup/);
+    expect(() => parseJobRequest({ command: "restore" })).toThrow(/Choose a backup/);
     expect(() => parseJobRequest({ command: "plan", limit: 2.5 })).toThrow(/limit/);
     expect(() => parseJobRequest(null)).toThrow(/command/);
   });

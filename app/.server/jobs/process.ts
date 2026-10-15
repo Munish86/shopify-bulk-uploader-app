@@ -4,9 +4,11 @@
 import { normalizeConfig, type Config, type Settings } from "../core/config";
 import type { Google } from "../core/google";
 import type { ImageFile } from "../core/images";
+import type { BackupData, BackupInfo } from "../core/backup";
+import { restoreRun } from "../core/restore";
 import { runJob, COMMANDS, type Command, type Progress, type RunResult, type RunStore } from "../core/runner";
 import type { SheetSource } from "../core/sheet";
-import type { Shopify } from "../core/shopify";
+import type { Shopify, ShopifyProduct } from "../core/shopify";
 import type { FileStorage } from "../storage";
 import { reportKey } from "../storage";
 
@@ -14,8 +16,15 @@ export interface ClaimedJob {
   id: string;
   shop: string;
   command: string;
-  options: { only?: string; limit?: number; force?: boolean } | null;
+  options: { only?: string; limit?: number; force?: boolean; backup?: string; skipEdited?: boolean } | null;
   attempts: number;
+}
+
+// Where a restore reads a backup from and writes its own backup to (the database in the app)
+export interface BackupAccess {
+  load(shop: string, backupId: string): Promise<{ items: BackupData[]; finishedAt: Date } | null>;
+  saveUndo(shop: string, jobId: string, product: ShopifyProduct, info: BackupInfo): Promise<void>;
+  afterRestore(shop: string, key: string | undefined, productId: string, imagesRemoved: boolean): Promise<void>;
 }
 
 export type FinalStatus = "done" | "failed" | "stopped";
@@ -50,6 +59,7 @@ export interface ProcessDeps {
   uploadedImages: (shop: string) => Promise<ImageFile[]>;
   shopifyFor: (shop: string) => Shopify;
   runStore: (shop: string, jobId: string) => RunStore;
+  backups: BackupAccess;
   heartbeatMs?: number;
   // True when the worker is shutting down: the job stops after the products in progress and is re-queued
   shuttingDown?: () => boolean;
@@ -116,28 +126,45 @@ export async function processJob(jobId: string, deps: ProcessDeps): Promise<Proc
   const timer = setInterval(beat, deps.heartbeatMs ?? 2000);
 
   try {
-    if (!COMMANDS.includes(job.command as Command)) throw new Error(`Unknown command "${job.command}".`);
-    const command = job.command as Command;
-    const cfg = normalizeConfig(await deps.loadSettings(job.shop));
-    const result = await runJob(
-      command,
-      {
-        cfg,
-        sheet: await deps.sheetSource(job.shop, cfg),
-        uploadedImages: () => deps.uploadedImages(job.shop),
-        google: deps.google,
-        shopify: command === "check" ? undefined : deps.shopifyFor(job.shop),
-        store: deps.runStore(job.shop, jobId),
-      },
-      {
-        log,
-        progress: (p) => (progress = p),
-        shouldStop: () => stopAsked || shuttingDown(),
-        only: job.options?.only,
-        limit: job.options?.limit,
-        force: job.options?.force,
-      },
-    );
+    const common = { log, progress: (p: Progress) => (progress = p), shouldStop: () => stopAsked || shuttingDown() };
+    let result: RunResult;
+    if (job.command === "restore-plan" || job.command === "restore") {
+      const backup = job.options?.backup ? await deps.backups.load(job.shop, job.options.backup) : null;
+      if (!backup) throw new Error("This backup no longer exists.");
+      const settings = await deps.loadSettings(job.shop);
+      result = await restoreRun(
+        {
+          shopify: deps.shopifyFor(job.shop),
+          items: backup.items,
+          finishedAt: backup.finishedAt,
+          saveUndo: (product, info) => deps.backups.saveUndo(job.shop, jobId, product, info),
+          afterRestore: (key, productId, removed) => deps.backups.afterRestore(job.shop, key, productId, removed),
+        },
+        {
+          ...common,
+          apply: job.command === "restore",
+          only: job.options?.only,
+          skipEdited: job.options?.skipEdited,
+          concurrency: Math.min(8, Math.max(1, Number(settings.options?.concurrency) || 4)),
+        },
+      );
+    } else {
+      if (!COMMANDS.includes(job.command as Command)) throw new Error(`Unknown command "${job.command}".`);
+      const command = job.command as Command;
+      const cfg = normalizeConfig(await deps.loadSettings(job.shop));
+      result = await runJob(
+        command,
+        {
+          cfg,
+          sheet: await deps.sheetSource(job.shop, cfg),
+          uploadedImages: () => deps.uploadedImages(job.shop),
+          google: deps.google,
+          shopify: command === "check" ? undefined : deps.shopifyFor(job.shop),
+          store: deps.runStore(job.shop, jobId),
+        },
+        { ...common, only: job.options?.only, limit: job.options?.limit, force: job.options?.force },
+      );
+    }
 
     clearInterval(timer);
     await beating;

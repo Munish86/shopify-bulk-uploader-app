@@ -4,7 +4,9 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { getGoogle } from "../.server/clients";
-import { getSettings } from "../.server/shops";
+import { getSettings, rememberAppHandle, setPlanFromSubscriptions } from "../.server/shops";
+import { usageThisMonth } from "../.server/run-store";
+import { planByKey, remaining } from "../lib/plans";
 import { listJobs } from "../.server/jobs/service";
 import { Uploader } from "../components/uploader/Uploader";
 import type { JobInfo } from "../components/uploader/api";
@@ -20,10 +22,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     `#graphql
     query uploaderHome {
       shop { name }
-      currentAppInstallation { accessScopes { handle } }
+      currentAppInstallation { app { handle } accessScopes { handle } activeSubscriptions { name status test } }
     }`,
   );
   const { data } = await response.json();
+  rememberAppHandle(data?.currentAppInstallation?.app?.handle);
   const granted = data?.currentAppInstallation?.accessScopes.map((s: { handle: string }) => s.handle) ?? [];
 
   await prisma.shop.upsert({
@@ -31,11 +34,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     create: { shop, name: data?.shop?.name ?? "" },
     update: { name: data?.shop?.name ?? "" },
   });
-  const [settings, imageCount, jobs] = await Promise.all([
+  const planKey = await setPlanFromSubscriptions(shop, data?.currentAppInstallation?.activeSubscriptions ?? []);
+  const [settings, imageCount, jobs, used] = await Promise.all([
     getSettings(shop),
     prisma.storedFile.count({ where: { shop, kind: "image" } }),
     listJobs(shop, 1),
+    usageThisMonth(shop),
   ]);
+  const plan = planByKey(planKey);
 
   return {
     shopName: data?.shop?.name || shop,
@@ -44,6 +50,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     imageCount,
     latestJob: (jobs[0] ?? null) as unknown as JobInfo | null,
     googleEmail: getGoogle().email,
+    allowance: { plan: plan.name, limit: plan.productsPerMonth, used, remaining: remaining(plan, used) },
   };
 };
 
@@ -67,6 +74,7 @@ export default function Index() {
         imageCount={d.imageCount}
         googleEmail={d.googleEmail}
         latestJob={d.latestJob}
+        allowance={d.allowance}
         templateUrl="/templates/Shopify-Product-Template.xlsx"
       />
     </s-page>
